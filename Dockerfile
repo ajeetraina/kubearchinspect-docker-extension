@@ -34,12 +34,14 @@ COPY ui/package*.json ./
 RUN npm install
 
 # Copy the UI configuration files
-COPY ui/tsconfig*.json ./
+COPY ui/tsconfig.json ui/tsconfig.node.json ./
 COPY ui/vite.config.ts ./
 COPY ui/index.html ./
 
-# Copy the source code
-COPY ui/src ./src
+# Copy only the necessary source files
+COPY ui/src/App.tsx ui/src/main.tsx ./src/
+COPY ui/src/types ./src/types/
+COPY ui/src/components/ResourceTable.tsx ./src/components/
 
 # Build the UI
 RUN npm run build
