@@ -1,5 +1,11 @@
-name: kubearchinspect
 services:
   kubearchinspect:
     image: ${DESKTOP_PLUGIN_IMAGE}
     restart: always
+    volumes:
+      - $HOME/.kube:/root/.kube:ro  # Mount kubeconfig file
+    security_opt:
+      - no-new-privileges:true
+    read_only: true
+    tmpfs:
+      - /tmp
