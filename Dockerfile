@@ -26,12 +26,17 @@ RUN GOOS=linux GOARCH=amd64 go build -a -v -o /bin/backend
 FROM --platform=$BUILDPLATFORM node:18.12-alpine3.16 AS client-builder
 WORKDIR /ui
 
+# Install TypeScript globally
+RUN npm install -g typescript
+
 # Copy package files first
 COPY ui/package*.json ./
 RUN npm install
 
 # Copy the rest of the UI code
 COPY ui/ .
+
+# Build the UI
 RUN npm run build
 
 FROM alpine:3.16
