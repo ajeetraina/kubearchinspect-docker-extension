@@ -1,20 +1,20 @@
 FROM --platform=$BUILDPLATFORM golang:1.19-alpine AS builder
-WORKDIR /src
+WORKDIR /backend
 
 # Install build dependencies
 RUN apk add --no-cache git
 
 # Copy Go module files
-COPY go.mod go.sum ./
+COPY backend/go.mod backend/go.sum ./
 
 # Download and verify dependencies
 RUN go mod download && go mod verify
 
 # Copy the backend code
-COPY backend/ ./backend/
+COPY backend/ ./
 
 # Build the backend
-RUN cd backend && CGO_ENABLED=0 GOOS=linux go build -v -o /bin/backend
+RUN CGO_ENABLED=0 GOOS=linux go build -v -o /bin/backend
 
 FROM --platform=$BUILDPLATFORM node:18.12-alpine3.16 AS client-builder
 WORKDIR /ui
