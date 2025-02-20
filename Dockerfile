@@ -11,7 +11,7 @@ RUN go mod download
 COPY backend/ ./backend/
 
 # Build the backend
-RUN cd backend && CGO_ENABLED=0 go build -o /bin/backend
+RUN cd backend && CGO_ENABLED=0 GOOS=linux go build -o /bin/backend
 
 FROM --platform=$BUILDPLATFORM node:18.12-alpine3.16 AS client-builder
 WORKDIR /ui
