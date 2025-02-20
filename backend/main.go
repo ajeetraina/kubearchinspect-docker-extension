@@ -1,6 +1,7 @@
 package main
 
 import (
+    "context"
     "net/http"
     "github.com/labstack/echo/v4"
     "github.com/labstack/echo/v4/middleware"
@@ -46,7 +47,7 @@ func handleInspect(c echo.Context) error {
         return echo.NewHTTPError(http.StatusInternalServerError, err.Error())
     }
 
-    resources, err := inspectResources(client)
+    resources, err := inspectResources(c.Request().Context(), client)
     if err != nil {
         return echo.NewHTTPError(http.StatusInternalServerError, err.Error())
     }
@@ -74,11 +75,11 @@ func getKubernetesClient() (*kubernetes.Clientset, error) {
     return clientset, nil
 }
 
-func inspectResources(client *kubernetes.Clientset) ([]Resource, error) {
+func inspectResources(ctx context.Context, client *kubernetes.Clientset) ([]Resource, error) {
     var resources []Resource
 
     // Get deployments from all namespaces
-    deployments, err := client.AppsV1().Deployments("").List(metav1.ListOptions{})
+    deployments, err := client.AppsV1().Deployments("").List(ctx, metav1.ListOptions{})
     if err != nil {
         return nil, err
     }
