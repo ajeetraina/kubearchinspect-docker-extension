@@ -8,17 +8,20 @@ RUN apk add --no-cache git gcc musl-dev
 WORKDIR /build/backend
 
 # Copy Go module files
-COPY backend/go.mod backend/go.sum ./
+COPY backend/go.mod ./
 
-# Initialize the module and verify dependencies
-RUN go mod download -x && \
-    go mod verify
+# Download dependencies first
+RUN go mod download
 
 # Copy the backend code
 COPY backend/ ./
 
+# Tidy and download any additional dependencies
+RUN go mod tidy && \
+    go mod download
+
 # Build the backend with verbose output
-RUN GOOS=linux GOARCH=amd64 go build -a -v -tags netgo -ldflags '-w -extldflags "-static"' -o /bin/backend
+RUN GOOS=linux GOARCH=amd64 go build -a -v -o /bin/backend
 
 FROM --platform=$BUILDPLATFORM node:18.12-alpine3.16 AS client-builder
 WORKDIR /ui
