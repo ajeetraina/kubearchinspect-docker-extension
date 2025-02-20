@@ -8,7 +8,7 @@ import {
   Paper, 
   TableContainer 
 } from '@mui/material';
-import { Resource } from '../types';
+import { Resource } from '../types/Resource';
 
 interface ResourceTableProps {
   resources: Resource[];

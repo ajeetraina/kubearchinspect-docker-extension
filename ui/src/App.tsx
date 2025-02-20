@@ -2,7 +2,7 @@ import React, { useState } from 'react';
 import { createDockerDesktopClient } from '@docker/extension-api-client';
 import { Box, Typography, Button, CircularProgress } from '@mui/material';
 import { ResourceTable } from './components/ResourceTable';
-import { Resource } from './types';
+import { Resource } from './types/Resource';
 
 const client = createDockerDesktopClient();
 
@@ -16,7 +16,11 @@ function App() {
     setError(null);
     try {
       const result = await client.extension.vm?.service?.get('/inspect');
-      setResources(result);
+      if (Array.isArray(result)) {
+        setResources(result as Resource[]);
+      } else {
+        setError('Invalid response format');
+      }
     } catch (err) {
       console.error(err);
       setError('Failed to inspect resources. Please check your connection to the cluster.');
