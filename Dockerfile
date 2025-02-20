@@ -26,15 +26,20 @@ RUN GOOS=linux GOARCH=amd64 go build -a -v -o /bin/backend
 FROM --platform=$BUILDPLATFORM node:18.12-alpine3.16 AS client-builder
 WORKDIR /ui
 
-# Install TypeScript globally
-RUN npm install -g typescript
+# Install build dependencies
+RUN apk add --no-cache python3 make g++
 
 # Copy package files first
 COPY ui/package*.json ./
 RUN npm install
 
-# Copy the rest of the UI code
-COPY ui/ .
+# Copy the UI configuration files
+COPY ui/tsconfig*.json ./
+COPY ui/vite.config.ts ./
+COPY ui/index.html ./
+
+# Copy the source code
+COPY ui/src ./src
 
 # Build the UI
 RUN npm run build
