@@ -1,31 +1,35 @@
 package main
 
 import (
-    "github.com/labstack/echo/v4"
-    "github.com/labstack/echo/v4/middleware"
-    "github.com/sirupsen/logrus"
+	"github.com/labstack/echo/v4"
+	"github.com/labstack/echo/v4/middleware"
+	"github.com/sirupsen/logrus"
+	"net/http"
 )
 
 func main() {
-    e := echo.New()
-    e.Use(middleware.CORS())
-    e.Use(middleware.Logger())
-    e.Use(middleware.Recover())
+	e := echo.New()
 
-    // Initialize Kubernetes client
-    client, err := kubernetes.GetKubernetesClient()
-    if err != nil {
-        logrus.Fatalf("Failed to create Kubernetes client: %v", err)
-    }
+	// Middleware
+	e.Use(middleware.Logger())
+	e.Use(middleware.Recover())
+	e.Use(middleware.CORS())
 
-    // Create inspector
-    inspector := inspector.NewKubernetesInspector(client)
+	// Routes
+	e.GET("/inspect", handleInspect)
 
-    // Routes
-    e.GET("/inspect", inspector.HandleInspect)
-    e.GET("/statistics", inspector.HandleStatistics)
-    e.POST("/export", inspector.HandleExport)
+	// Start server
+	port := ":8080"
+	logrus.Infof("Starting server on port %s", port)
+	e.Logger.Fatal(e.Start(port))
+}
 
-    // Start server
-    e.Logger.Fatal(e.Start(":8080"))
+func handleInspect(c echo.Context) error {
+	// This is a placeholder response
+	result := map[string]interface{}{
+		"status": "success",
+		"message": "Inspection service is running",
+	}
+
+	return c.JSON(http.StatusOK, result)
 }
