@@ -1,0 +1,34 @@
+{
+  "name": "kubearchinspect",
+  "version": "0.1.0",
+  "title": "Kubernetes ARM Inspector",
+  "description": "Inspect Kubernetes resources for ARM compatibility",
+  "ui": {
+    "dashboard-tab": {
+      "title": "KubeArchInspect",
+      "root": "/ui",
+      "src": "index.html"
+    }
+  },
+  "host": {
+    "binaries": [
+      {
+        "darwin": [
+          {
+            "path": "/backend"
+          }
+        ],
+        "linux": [
+          {
+            "path": "/backend"
+          }
+        ],
+        "windows": [
+          {
+            "path": "/backend"
+          }
+        ]
+      }
+    ]
+  }
+}
