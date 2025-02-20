@@ -2,22 +2,23 @@ FROM --platform=$BUILDPLATFORM golang:1.19-alpine AS builder
 WORKDIR /build
 
 # Install build dependencies
-RUN apk add --no-cache git
+RUN apk add --no-cache git gcc musl-dev
 
-# Create the backend directory
+# Create and set the backend directory
 WORKDIR /build/backend
 
 # Copy Go module files
 COPY backend/go.mod backend/go.sum ./
 
-# Download and verify dependencies
-RUN go mod download -x && go mod verify
+# Clear go mod cache and download dependencies
+RUN go clean -modcache && \
+    go mod download -x
 
 # Copy the backend code
 COPY backend/ ./
 
 # Build the backend with verbose output
-RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -v -o /bin/backend
+RUN GOOS=linux GOARCH=amd64 go build -v -o /bin/backend
 
 FROM --platform=$BUILDPLATFORM node:18.12-alpine3.16 AS client-builder
 WORKDIR /ui
@@ -41,11 +42,17 @@ LABEL org.opencontainers.image.title="kubearchinspect" \
     com.docker.extension.additional-urls="" \
     com.docker.extension.changelog=""
 
+# Install runtime dependencies
+RUN apk add --no-cache ca-certificates
+
 # Copy binary, compose file and metadata
 COPY --from=builder /bin/backend /
 COPY docker-compose.yaml .
 COPY metadata.json .
 COPY --from=client-builder /ui/build ui
 COPY kubearchinspect.svg .
+
+# Set secure permissions
+RUN chmod 555 /backend
 
 ENTRYPOINT ["/backend"]
