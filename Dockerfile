@@ -11,16 +11,7 @@ RUN npm install
 RUN npm run build
 
 FROM alpine:3.16
-LABEL org.opencontainers.image.title="kubearchinspect" \
-    org.opencontainers.image.description="Docker Extension to inspect Kubernetes resources for ARM compatibility" \
-    org.opencontainers.image.vendor="Ajeet Singh Raina" \
-    com.docker.desktop.extension.api.version="0.3.0" \
-    com.docker.extension.screenshots="" \
-    com.docker.extension.detailed-description="This extension helps you identify if your Kubernetes resources are ARM compatible" \
-    com.docker.extension.publisher-url="https://github.com/ajeetraina" \
-    com.docker.extension.additional-urls="" \
-    com.docker.extension.changelog=""
-
+LABEL org.opencontainers.image.title="kubearchinspect"
 COPY --from=builder /bin/backend /
 COPY docker-compose.yaml .
 COPY metadata.json .

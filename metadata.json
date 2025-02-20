@@ -9,26 +9,5 @@
       "root": "/ui",
       "src": "index.html"
     }
-  },
-  "host": {
-    "binaries": [
-      {
-        "darwin": [
-          {
-            "path": "/backend"
-          }
-        ],
-        "linux": [
-          {
-            "path": "/backend"
-          }
-        ],
-        "windows": [
-          {
-            "path": "/backend"
-          }
-        ]
-      }
-    ]
   }
 }
