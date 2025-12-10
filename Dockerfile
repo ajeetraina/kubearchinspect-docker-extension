@@ -1,73 +1,81 @@
-FROM --platform=$BUILDPLATFORM golang:1.19-alpine AS builder
-WORKDIR /build
+# syntax=docker/dockerfile:1
+FROM --platform=$BUILDPLATFORM golang:1.21-alpine AS builder
+ENV CGO_ENABLED=0
+WORKDIR /backend
 
 # Install build dependencies
-RUN apk add --no-cache git gcc musl-dev
-
-# Create and set the backend directory
-WORKDIR /build/backend
+RUN apk add --no-cache git
 
 # Copy Go module files
-COPY backend/go.mod ./
-
-# Download dependencies first
+COPY backend/go.mod backend/go.sum ./
 RUN go mod download
 
 # Copy the backend code
 COPY backend/ ./
 
-# Tidy and download any additional dependencies
-RUN go mod tidy && \
-    go mod download
+# Build the backend for multiple architectures
+ARG TARGETOS TARGETARCH
+RUN --mount=type=cache,target=/go/pkg/mod \
+    --mount=type=cache,target=/root/.cache/go-build \
+    GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -trimpath -ldflags="-s -w" -o /bin/service
 
-# Build the backend with verbose output
-RUN GOOS=linux GOARCH=amd64 go build -a -v -o /bin/backend
-
-FROM --platform=$BUILDPLATFORM node:18.12-alpine3.16 AS client-builder
+# Build the frontend
+FROM --platform=$BUILDPLATFORM node:18-alpine3.17 AS client-builder
 WORKDIR /ui
 
-# Install build dependencies
-RUN apk add --no-cache python3 make g++
-
-# Copy package files first
+# Copy package files and install dependencies
 COPY ui/package*.json ./
-RUN npm install
+RUN npm ci
 
-# Copy the UI configuration files
-COPY ui/tsconfig.json ui/tsconfig.node.json ./
-COPY ui/vite.config.ts ./
-COPY ui/index.html ./
-
-# Copy only the necessary source files
-COPY ui/src/App.tsx ui/src/main.tsx ./src/
-COPY ui/src/types ./src/types/
-COPY ui/src/components/ResourceTable.tsx ./src/components/
+# Copy UI source code
+COPY ui/ ./
 
 # Build the UI
 RUN npm run build
 
-FROM alpine:3.16
-LABEL org.opencontainers.image.title="kubearchinspect" \
-    org.opencontainers.image.description="Docker Extension to inspect Kubernetes resources for ARM compatibility" \
+# Download kubectl for host binaries
+FROM --platform=$BUILDPLATFORM alpine:3.18 AS kubectl-builder
+ARG TARGETOS TARGETARCH
+RUN apk add --no-cache curl && \
+    curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/${TARGETOS}/${TARGETARCH}/kubectl" && \
+    chmod +x kubectl && \
+    mkdir -p /${TARGETOS} && \
+    mv kubectl /${TARGETOS}/kubectl
+
+# Final stage
+FROM alpine:3.18
+
+LABEL org.opencontainers.image.title="KubeArchInspect" \
+    org.opencontainers.image.description="Docker Desktop Extension to check if container images in a Kubernetes cluster have ARM64 architecture support" \
     org.opencontainers.image.vendor="Ajeet Singh Raina" \
-    com.docker.desktop.extension.api.version="0.3.0" \
-    com.docker.extension.screenshots="" \
-    com.docker.extension.detailed-description="This extension helps you identify if your Kubernetes resources are ARM compatible" \
+    com.docker.desktop.extension.api.version="0.3.4" \
+    com.docker.desktop.extension.icon="https://raw.githubusercontent.com/ajeetraina/kubearchinspect-docker-extension/main/kubearchinspect.svg" \
+    com.docker.extension.screenshots="[{\"alt\": \"KubeArchInspect Dashboard\", \"url\": \"https://raw.githubusercontent.com/ajeetraina/kubearchinspect-docker-extension/main/docs/screenshot.png\"}]" \
+    com.docker.extension.detailed-description="KubeArchInspect is a Docker Desktop Extension that helps you identify which container images in your Kubernetes cluster have ARM64 architecture support. This is essential for planning migrations to ARM-based infrastructure like AWS Graviton or Apple Silicon." \
     com.docker.extension.publisher-url="https://github.com/ajeetraina" \
-    com.docker.extension.additional-urls="" \
-    com.docker.extension.changelog=""
+    com.docker.extension.additional-urls="[{\"title\":\"GitHub Repository\", \"url\":\"https://github.com/ajeetraina/kubearchinspect-docker-extension\"}, {\"title\":\"Original Project\", \"url\":\"https://github.com/ArmDeveloperEcosystem/kubearchinspect\"}]" \
+    com.docker.extension.changelog="<p>Initial release with ARM64 compatibility checking for Kubernetes cluster images</p>" \
+    com.docker.extension.categories="kubernetes,utility"
 
 # Install runtime dependencies
 RUN apk add --no-cache ca-certificates
 
-# Copy binary, compose file and metadata
-COPY --from=builder /bin/backend /
-COPY docker-compose.yaml .
+# Copy backend binary
+COPY --from=builder /bin/service /
+
+# Copy metadata and icon
 COPY metadata.json .
-COPY --from=client-builder /ui/build ui
 COPY kubearchinspect.svg .
 
-# Set secure permissions
-RUN chmod 555 /backend
+# Copy UI build output
+COPY --from=client-builder /ui/dist ui
 
-ENTRYPOINT ["/backend"]
+# Copy kubectl binaries for host
+COPY --from=kubectl-builder /linux/kubectl /linux/kubectl
+COPY --from=kubectl-builder /darwin/kubectl /darwin/kubectl 2>/dev/null || true
+COPY --from=kubectl-builder /windows/kubectl /windows/kubectl.exe 2>/dev/null || true
+
+# Set secure permissions
+RUN chmod 555 /service
+
+CMD ["/service", "-socket", "/run/guest-services/kubearchinspect.sock"]

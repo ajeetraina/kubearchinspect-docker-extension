@@ -1,13 +1,34 @@
 {
-  "name": "kubearchinspect",
-  "version": "0.1.0",
-  "title": "Kubernetes ARM Inspector",
-  "description": "Inspect Kubernetes resources for ARM compatibility",
+  "icon": "kubearchinspect.svg",
+  "vm": {
+    "image": "${DESKTOP_PLUGIN_IMAGE}"
+  },
   "ui": {
     "dashboard-tab": {
       "title": "KubeArchInspect",
       "root": "/ui",
       "src": "index.html"
     }
+  },
+  "host": {
+    "binaries": [
+      {
+        "darwin": [
+          {
+            "path": "/darwin/kubectl"
+          }
+        ],
+        "linux": [
+          {
+            "path": "/linux/kubectl"
+          }
+        ],
+        "windows": [
+          {
+            "path": "/windows/kubectl.exe"
+          }
+        ]
+      }
+    ]
   }
 }
