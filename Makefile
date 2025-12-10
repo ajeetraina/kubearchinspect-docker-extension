@@ -1,55 +1,53 @@
-# Variables
-EXTENSION_NAME=kubearchinspect
-VERSION=0.1.0
-IMAGE_NAME=$(EXTENSION_NAME):$(VERSION)
+# KubeArchInspect Docker Extension Makefile
 
-# Build the extension
-build-extension: 
-	docker buildx build \
-		--platform=linux/amd64,linux/arm64 \
-		-t $(IMAGE_NAME) \
-		--build-arg EXTENSION_NAME=$(EXTENSION_NAME) \
-		.
+IMAGE_NAME ?= ajeetraina/kubearchinspect
+TAG ?= latest
+PLATFORMS ?= linux/amd64,linux/arm64
 
-# Install the extension
-install-extension: build-extension
-	docker extension install $(IMAGE_NAME)
+.PHONY: help build install uninstall update dev-ui dev-reset clean
 
-# Update the installed extension
-update-extension: build-extension
-	docker extension update $(IMAGE_NAME)
+help: ## Show this help message
+	@echo 'Usage: make [target]'
+	@echo ''
+	@echo 'Targets:'
+	@awk 'BEGIN {FS = ":.*?## "} /^[a-zA-Z_-]+:.*?## / {printf "  %-15s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
 
-# Remove the extension
-remove-extension:
-	docker extension rm $(IMAGE_NAME)
+build: ## Build the extension image
+	docker build --tag=$(IMAGE_NAME):$(TAG) .
 
-# Build frontend
-build-frontend:
+build-multiarch: ## Build multi-architecture image
+	docker buildx build --platform $(PLATFORMS) --tag=$(IMAGE_NAME):$(TAG) --push .
+
+install: build ## Build and install the extension
+	docker extension install $(IMAGE_NAME):$(TAG)
+
+uninstall: ## Uninstall the extension
+	docker extension uninstall $(IMAGE_NAME):$(TAG)
+
+update: build ## Update the installed extension
+	docker extension update $(IMAGE_NAME):$(TAG)
+
+dev-ui: ## Enable UI hot-reload development
+	cd ui && npm run dev &
+	docker extension dev ui-source $(IMAGE_NAME):$(TAG) http://localhost:5173
+
+dev-debug: ## Enable backend debugging
+	docker extension dev debug $(IMAGE_NAME):$(TAG)
+
+dev-reset: ## Reset development mode
+	docker extension dev reset $(IMAGE_NAME):$(TAG)
+
+ui-build: ## Build the UI only
 	cd ui && npm install && npm run build
 
-# Build backend
-build-backend:
-	cd backend && go build -o bin/$(EXTENSION_NAME)
+backend-build: ## Build the backend only
+	cd backend && go build -o kubearchinspect .
 
-# Run tests
-test: test-backend test-frontend
+clean: ## Clean build artifacts
+	rm -rf ui/dist ui/node_modules backend/kubearchinspect
 
-test-backend:
-	cd backend && go test ./...
+logs: ## Show extension logs
+	docker extension logs $(IMAGE_NAME):$(TAG)
 
-test-frontend:
-	cd ui && npm test
-
-# Development mode
-dev:
-	docker extension dev enable $(EXTENSION_NAME)
-
-debug:
-	docker extension dev debug $(EXTENSION_NAME)
-
-# Clean up
-clean:
-	rm -rf ui/build backend/bin
-	- docker extension rm $(IMAGE_NAME)
-
-.PHONY: build-extension install-extension update-extension remove-extension build-frontend build-backend test test-backend test-frontend dev debug clean
+validate: ## Validate extension metadata
+	docker extension validate $(IMAGE_NAME):$(TAG)
