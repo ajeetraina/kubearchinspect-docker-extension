@@ -2,16 +2,16 @@
   "icon": "kubearchinspect.svg",
   "vm": {
     "image": "${DESKTOP_PLUGIN_IMAGE}",
-    "exposeDockerSocket": true
+    "exposeDockerSocket": true,
+    "mounts": [
+      {
+        "source": "${HOME}/.kube",
+        "target": "/root/.kube",
+        "type": "bind",
+        "readOnly": true
+      }
+    ]
   },
-  "mounts": [
-    {
-      "source": "$HOME/.kube",
-      "target": "/root/.kube",
-      "type": "bind",
-      "readOnly": true
-    }
-  ],
   "ui": {
     "dashboard-tab": {
       "title": "KubeArchInspect",
