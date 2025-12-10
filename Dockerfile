@@ -63,8 +63,8 @@ COPY --from=builder /bin/service /
 COPY metadata.json .
 COPY kubearchinspect.svg .
 
-# Copy UI build output
-COPY --from=client-builder /ui/dist ui
+# Copy UI build output (vite config uses 'build' as outDir)
+COPY --from=client-builder /ui/build ui
 
 # Set secure permissions
 RUN chmod 555 /service
