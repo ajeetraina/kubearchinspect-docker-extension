@@ -7,11 +7,16 @@ WORKDIR /backend
 RUN apk add --no-cache git
 
 # Copy Go module files
-COPY backend/go.mod backend/go.sum ./
+COPY backend/go.mod ./
+
+# Download dependencies (this will regenerate go.sum)
 RUN go mod download
 
 # Copy the backend code
 COPY backend/ ./
+
+# Tidy up modules to ensure go.sum is complete
+RUN go mod tidy
 
 # Build the backend for multiple architectures
 ARG TARGETOS TARGETARCH
