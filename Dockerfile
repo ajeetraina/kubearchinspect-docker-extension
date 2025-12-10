@@ -24,23 +24,14 @@ FROM --platform=$BUILDPLATFORM node:18-alpine3.17 AS client-builder
 WORKDIR /ui
 
 # Copy package files and install dependencies
-COPY ui/package*.json ./
-RUN npm ci
+COPY ui/package.json ./
+RUN npm install --legacy-peer-deps
 
 # Copy UI source code
 COPY ui/ ./
 
 # Build the UI
 RUN npm run build
-
-# Download kubectl for host binaries
-FROM --platform=$BUILDPLATFORM alpine:3.18 AS kubectl-builder
-ARG TARGETOS TARGETARCH
-RUN apk add --no-cache curl && \
-    curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/${TARGETOS}/${TARGETARCH}/kubectl" && \
-    chmod +x kubectl && \
-    mkdir -p /${TARGETOS} && \
-    mv kubectl /${TARGETOS}/kubectl
 
 # Final stage
 FROM alpine:3.18
@@ -69,11 +60,6 @@ COPY kubearchinspect.svg .
 
 # Copy UI build output
 COPY --from=client-builder /ui/dist ui
-
-# Copy kubectl binaries for host
-COPY --from=kubectl-builder /linux/kubectl /linux/kubectl
-COPY --from=kubectl-builder /darwin/kubectl /darwin/kubectl 2>/dev/null || true
-COPY --from=kubectl-builder /windows/kubectl /windows/kubectl.exe 2>/dev/null || true
 
 # Set secure permissions
 RUN chmod 555 /service
