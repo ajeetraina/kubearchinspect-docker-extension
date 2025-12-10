@@ -264,22 +264,4 @@ kubectl auth can-i get pods --all-namespaces
 
 For private registries, the extension uses default authentication from:
 - Docker config (`~/.docker/config.json`)
-- Kubernetes image pull secrets
-
-## Contributing
-
-Contributions are welcome! Please read our [Contributing Guide](CONTRIBUTING.md) for details.
-
-## Credits
-
-Based on the original [kubearchinspect CLI tool](https://github.com/ArmDeveloperEcosystem/kubearchinspect) by ARM Developer Ecosystem.
-
-## License
-
-Apache 2.0 - See [LICENSE](LICENSE) for details.
-
----
-
-<p align="center">
-  Made with ❤️ by <a href="https://github.com/ajeetraina">Ajeet Raina</a> | Docker Captain
-</p>
+- Kubernetes image pull 
