@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"flag"
 	"fmt"
 	"net"
@@ -31,20 +30,21 @@ import (
 type ImageResult struct {
 	Image           string   `json:"image"`
 	Namespace       string   `json:"namespace"`
-	PodName         string   `json:"podName"`
-	Kind            string   `json:"kind"`
+	ResourceName    string   `json:"resourceName"`
+	ResourceType    string   `json:"resourceType"`
 	Status          string   `json:"status"`
-	Message         string   `json:"message,omitempty"`
+	Error           string   `json:"error,omitempty"`
 	SupportedArch   []string `json:"supportedArch,omitempty"`
 	IsArmCompatible bool     `json:"isArmCompatible"`
-	HasUpdateAvail  bool     `json:"hasUpdateAvailable"`
 }
 
 // InspectResponse represents the API response
 type InspectResponse struct {
-	Results  []ImageResult `json:"results"`
-	Summary  Summary       `json:"summary"`
-	ScanTime string        `json:"scanTime"`
+	Results   []ImageResult `json:"results"`
+	Summary   Summary       `json:"summary"`
+	ScanTime  string        `json:"scanTime"`
+	Context   string        `json:"context"`
+	Namespace string        `json:"namespace"`
 }
 
 // Summary represents the scan summary
@@ -53,7 +53,6 @@ type Summary struct {
 	ArmCompatible int `json:"armCompatible"`
 	NotCompatible int `json:"notCompatible"`
 	Errors        int `json:"errors"`
-	CanUpgrade    int `json:"canUpgrade"`
 }
 
 // KubeContext represents a Kubernetes context
@@ -61,6 +60,12 @@ type KubeContext struct {
 	Name      string `json:"name"`
 	Cluster   string `json:"cluster"`
 	IsCurrent bool   `json:"isCurrent"`
+}
+
+// ContextsResponse represents the contexts API response
+type ContextsResponse struct {
+	Contexts []KubeContext `json:"contexts"`
+	Current  string        `json:"current"`
 }
 
 var logger = logrus.New()
@@ -90,7 +95,6 @@ func main() {
 	e.GET("/health", healthHandler)
 	e.GET("/contexts", getContextsHandler)
 	e.GET("/inspect", inspectHandler)
-	e.POST("/inspect", inspectHandler)
 
 	// Create Unix socket listener
 	listener, err := net.Listen("unix", socketPath)
@@ -107,19 +111,22 @@ func healthHandler(c echo.Context) error {
 }
 
 func getContextsHandler(c echo.Context) error {
-	contexts, err := getKubeContexts()
+	contexts, current, err := getKubeContexts()
 	if err != nil {
 		logger.Errorf("Failed to get contexts: %v", err)
 		return echo.NewHTTPError(http.StatusInternalServerError, err.Error())
 	}
-	return c.JSON(http.StatusOK, contexts)
+	return c.JSON(http.StatusOK, ContextsResponse{
+		Contexts: contexts,
+		Current:  current,
+	})
 }
 
-func getKubeContexts() ([]KubeContext, error) {
+func getKubeContexts() ([]KubeContext, string, error) {
 	kubeconfig := getKubeconfigPath()
 	config, err := clientcmd.LoadFromFile(kubeconfig)
 	if err != nil {
-		return nil, fmt.Errorf("failed to load kubeconfig: %w", err)
+		return nil, "", fmt.Errorf("failed to load kubeconfig: %w", err)
 	}
 
 	var contexts []KubeContext
@@ -130,12 +137,16 @@ func getKubeContexts() ([]KubeContext, error) {
 			IsCurrent: name == config.CurrentContext,
 		})
 	}
-	return contexts, nil
+	return contexts, config.CurrentContext, nil
 }
 
 func inspectHandler(c echo.Context) error {
 	ctxName := c.QueryParam("context")
 	namespace := c.QueryParam("namespace")
+
+	if namespace == "" || namespace == "all" {
+		namespace = "" // Empty string means all namespaces in K8s API
+	}
 
 	logger.Infof("Inspecting cluster with context: %s, namespace: %s", ctxName, namespace)
 
@@ -154,23 +165,21 @@ func inspectHandler(c echo.Context) error {
 	// Calculate summary
 	summary := Summary{Total: len(results)}
 	for _, r := range results {
-		switch r.Status {
-		case "compatible":
-			summary.ArmCompatible++
-		case "not-compatible":
-			summary.NotCompatible++
-			if r.HasUpdateAvail {
-				summary.CanUpgrade++
-			}
-		case "error":
+		if r.Error != "" {
 			summary.Errors++
+		} else if r.IsArmCompatible {
+			summary.ArmCompatible++
+		} else {
+			summary.NotCompatible++
 		}
 	}
 
 	response := InspectResponse{
-		Results:  results,
-		Summary:  summary,
-		ScanTime: time.Now().Format(time.RFC3339),
+		Results:   results,
+		Summary:   summary,
+		ScanTime:  time.Now().Format(time.RFC3339),
+		Context:   ctxName,
+		Namespace: namespace,
 	}
 
 	return c.JSON(http.StatusOK, response)
@@ -236,10 +245,10 @@ func inspectCluster(ctx context.Context, client *kubernetes.Clientset, namespace
 			key := container.Image
 			if _, exists := imageMap[key]; !exists {
 				imageMap[key] = &ImageResult{
-					Image:     container.Image,
-					Namespace: pod.Namespace,
-					PodName:   pod.Name,
-					Kind:      "Pod",
+					Image:        container.Image,
+					Namespace:    pod.Namespace,
+					ResourceName: pod.Name,
+					ResourceType: "Pod",
 				}
 			}
 		}
@@ -255,10 +264,10 @@ func inspectCluster(ctx context.Context, client *kubernetes.Clientset, namespace
 				key := container.Image
 				if _, exists := imageMap[key]; !exists {
 					imageMap[key] = &ImageResult{
-						Image:     container.Image,
-						Namespace: deploy.Namespace,
-						PodName:   deploy.Name,
-						Kind:      "Deployment",
+						Image:        container.Image,
+						Namespace:    deploy.Namespace,
+						ResourceName: deploy.Name,
+						ResourceType: "Deployment",
 					}
 				}
 			}
@@ -275,10 +284,10 @@ func inspectCluster(ctx context.Context, client *kubernetes.Clientset, namespace
 				key := container.Image
 				if _, exists := imageMap[key]; !exists {
 					imageMap[key] = &ImageResult{
-						Image:     container.Image,
-						Namespace: ds.Namespace,
-						PodName:   ds.Name,
-						Kind:      "DaemonSet",
+						Image:        container.Image,
+						Namespace:    ds.Namespace,
+						ResourceName: ds.Name,
+						ResourceType: "DaemonSet",
 					}
 				}
 			}
@@ -295,10 +304,10 @@ func inspectCluster(ctx context.Context, client *kubernetes.Clientset, namespace
 				key := container.Image
 				if _, exists := imageMap[key]; !exists {
 					imageMap[key] = &ImageResult{
-						Image:     container.Image,
-						Namespace: sts.Namespace,
-						PodName:   sts.Name,
-						Kind:      "StatefulSet",
+						Image:        container.Image,
+						Namespace:    sts.Namespace,
+						ResourceName: sts.Name,
+						ResourceType: "StatefulSet",
 					}
 				}
 			}
@@ -336,8 +345,7 @@ func inspectCluster(ctx context.Context, client *kubernetes.Clientset, namespace
 func checkImageArm64Support(result *ImageResult) {
 	ref, err := name.ParseReference(result.Image)
 	if err != nil {
-		result.Status = "error"
-		result.Message = fmt.Sprintf("Failed to parse image reference: %v", err)
+		result.Error = fmt.Sprintf("Failed to parse image reference: %v", err)
 		return
 	}
 
@@ -347,27 +355,22 @@ func checkImageArm64Support(result *ImageResult) {
 		// Try as a single-platform image
 		img, imgErr := remote.Image(ref, remote.WithAuthFromKeychain(authn.DefaultKeychain))
 		if imgErr != nil {
-			result.Status = "error"
-			result.Message = fmt.Sprintf("Failed to fetch image: %v", err)
+			result.Error = fmt.Sprintf("Failed to fetch image: %v", err)
 			return
 		}
 
 		// Check config for architecture
 		cfg, cfgErr := img.ConfigFile()
 		if cfgErr != nil {
-			result.Status = "error"
-			result.Message = fmt.Sprintf("Failed to get image config: %v", cfgErr)
+			result.Error = fmt.Sprintf("Failed to get image config: %v", cfgErr)
 			return
 		}
 
 		result.SupportedArch = []string{cfg.Architecture}
 		if cfg.Architecture == "arm64" || cfg.Architecture == "aarch64" {
-			result.Status = "compatible"
 			result.IsArmCompatible = true
 		} else {
-			result.Status = "not-compatible"
 			result.IsArmCompatible = false
-			result.Message = fmt.Sprintf("Only supports %s", cfg.Architecture)
 		}
 		return
 	}
@@ -375,8 +378,7 @@ func checkImageArm64Support(result *ImageResult) {
 	// It's a multi-arch image, check the manifest
 	idxManifest, err := idx.IndexManifest()
 	if err != nil {
-		result.Status = "error"
-		result.Message = fmt.Sprintf("Failed to get index manifest: %v", err)
+		result.Error = fmt.Sprintf("Failed to get index manifest: %v", err)
 		return
 	}
 
@@ -397,12 +399,5 @@ func checkImageArm64Support(result *ImageResult) {
 	}
 
 	result.SupportedArch = architectures
-	if hasArm64 {
-		result.Status = "compatible"
-		result.IsArmCompatible = true
-	} else {
-		result.Status = "not-compatible"
-		result.IsArmCompatible = false
-		result.Message = fmt.Sprintf("Image only supports: %s", strings.Join(architectures, ", "))
-	}
+	result.IsArmCompatible = hasArm64
 }
