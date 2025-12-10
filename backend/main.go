@@ -8,7 +8,6 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"strings"
 	"sync"
 	"time"
 
@@ -32,7 +31,6 @@ type ImageResult struct {
 	Namespace       string   `json:"namespace"`
 	ResourceName    string   `json:"resourceName"`
 	ResourceType    string   `json:"resourceType"`
-	Status          string   `json:"status"`
 	Error           string   `json:"error,omitempty"`
 	SupportedArch   []string `json:"supportedArch,omitempty"`
 	IsArmCompatible bool     `json:"isArmCompatible"`
