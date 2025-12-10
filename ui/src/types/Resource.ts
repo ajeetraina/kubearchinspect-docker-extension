@@ -1,7 +1,2 @@
-export interface Resource {
-  name: string;
-  namespace: string;
-  kind: string;
-  isArmCompatible: boolean;
-  image?: string;
-}
+// This file is deprecated - use types/index.ts instead
+export {};
