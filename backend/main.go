@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"net/http"
 	"os"
-	"os/exec"
 	"strings"
 	"sync"
 	"time"
@@ -26,9 +25,17 @@ func init() {
 	log.SetLevel(logrus.InfoLevel)
 }
 
+// Image to inspect
+type ImageRequest struct {
+	Image        string `json:"image"`
+	ResourceType string `json:"resourceType"`
+	ResourceName string `json:"resourceName"`
+	Namespace    string `json:"namespace"`
+}
+
+// Request body for batch inspection
 type InspectRequest struct {
-	Context   string `query:"context"`
-	Namespace string `query:"namespace"`
+	Images []ImageRequest `json:"images"`
 }
 
 type InspectResult struct {
@@ -42,24 +49,16 @@ type InspectResult struct {
 }
 
 type InspectResponse struct {
-	Context  string          `json:"context"`
 	Results  []InspectResult `json:"results"`
 	Summary  Summary         `json:"summary"`
 	ScanTime string          `json:"scanTime"`
 }
 
 type Summary struct {
-	Total       int `json:"total"`
-	Compatible  int `json:"compatible"`
+	Total        int `json:"total"`
+	Compatible   int `json:"compatible"`
 	Incompatible int `json:"incompatible"`
-	Errors      int `json:"errors"`
-}
-
-type Resource struct {
-	Type      string
-	Name      string
-	Namespace string
-	Image     string
+	Errors       int `json:"errors"`
 }
 
 func main() {
@@ -75,8 +74,8 @@ func main() {
 		})
 	})
 
-	// Main inspection endpoint
-	e.GET("/inspect", handleInspect)
+	// Main inspection endpoint - accepts list of images
+	e.POST("/inspect", handleInspect)
 
 	port := os.Getenv("PORT")
 	if port == "" {
@@ -94,40 +93,22 @@ func handleInspect(c echo.Context) error {
 	if err := c.Bind(&req); err != nil {
 		log.WithError(err).Error("Failed to bind request")
 		return c.JSON(http.StatusBadRequest, map[string]string{
-			"error": "Invalid request parameters",
+			"error": "Invalid request body",
 		})
 	}
 
-	if req.Context == "" {
+	if len(req.Images) == 0 {
 		return c.JSON(http.StatusBadRequest, map[string]string{
-			"error": "context parameter is required",
+			"error": "No images provided",
 		})
 	}
 
-	if req.Namespace == "" {
-		req.Namespace = "all"
-	}
-
-	log.WithFields(logrus.Fields{
-		"context":   req.Context,
-		"namespace": req.Namespace,
-	}).Info("Starting inspection")
+	log.Infof("Received request to inspect %d images", len(req.Images))
 
 	startTime := time.Now()
 
-	// Get resources from cluster
-	resources, err := getResources(req.Context, req.Namespace)
-	if err != nil {
-		log.WithError(err).Error("Failed to get resources")
-		return c.JSON(http.StatusInternalServerError, map[string]string{
-			"error": fmt.Sprintf("Failed to get resources: %v", err),
-		})
-	}
-
-	log.Infof("Found %d resources to inspect", len(resources))
-
 	// Inspect images concurrently
-	results := inspectImages(resources)
+	results := inspectImages(req.Images)
 
 	// Calculate summary
 	summary := Summary{Total: len(results)}
@@ -144,155 +125,57 @@ func handleInspect(c echo.Context) error {
 	scanTime := time.Since(startTime).String()
 
 	response := InspectResponse{
-		Context:  req.Context,
 		Results:  results,
 		Summary:  summary,
 		ScanTime: scanTime,
 	}
 
 	log.WithFields(logrus.Fields{
-		"total":       summary.Total,
-		"compatible":  summary.Compatible,
+		"total":        summary.Total,
+		"compatible":   summary.Compatible,
 		"incompatible": summary.Incompatible,
-		"errors":      summary.Errors,
-		"scan_time":   scanTime,
+		"errors":       summary.Errors,
+		"scan_time":    scanTime,
 	}).Info("Inspection completed")
 
 	return c.JSON(http.StatusOK, response)
 }
 
-func getResources(contextName, namespace string) ([]Resource, error) {
-	args := []string{
-		"--context", contextName,
-		"get", "pods,deployments,statefulsets,daemonsets,jobs,cronjobs",
-		"-o", "json",
-	}
-
-	if namespace != "all" {
-		args = append(args, "-n", namespace)
-	} else {
-		args = append(args, "--all-namespaces")
-	}
-
-	cmd := exec.Command("kubectl", args...)
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		return nil, fmt.Errorf("kubectl command failed: %v, output: %s", err, string(output))
-	}
-
-	var result struct {
-		Items []map[string]interface{} `json:"items"`
-	}
-
-	if err := json.Unmarshal(output, &result); err != nil {
-		return nil, fmt.Errorf("failed to parse kubectl output: %v", err)
-	}
-
-	var resources []Resource
-	seen := make(map[string]bool)
-
-	for _, item := range result.Items {
-		kind := item["kind"].(string)
-		metadata := item["metadata"].(map[string]interface{})
-		resourceName := metadata["name"].(string)
-		resourceNamespace := metadata["namespace"].(string)
-
-		var containers []map[string]interface{}
-
-		// Extract containers based on resource type
-		spec := item["spec"].(map[string]interface{})
-		switch kind {
-		case "Pod":
-			if cs, ok := spec["containers"].([]interface{}); ok {
-				for _, c := range cs {
-					containers = append(containers, c.(map[string]interface{}))
-				}
-			}
-		case "Deployment", "StatefulSet", "DaemonSet":
-			if template, ok := spec["template"].(map[string]interface{}); ok {
-				if templateSpec, ok := template["spec"].(map[string]interface{}); ok {
-					if cs, ok := templateSpec["containers"].([]interface{}); ok {
-						for _, c := range cs {
-							containers = append(containers, c.(map[string]interface{}))
-						}
-					}
-				}
-			}
-		case "Job", "CronJob":
-			var jobSpec map[string]interface{}
-			if kind == "CronJob" {
-				if jobTemplate, ok := spec["jobTemplate"].(map[string]interface{}); ok {
-					jobSpec = jobTemplate["spec"].(map[string]interface{})
-				}
-			} else {
-				jobSpec = spec
-			}
-			if template, ok := jobSpec["template"].(map[string]interface{}); ok {
-				if templateSpec, ok := template["spec"].(map[string]interface{}); ok {
-					if cs, ok := templateSpec["containers"].([]interface{}); ok {
-						for _, c := range cs {
-							containers = append(containers, c.(map[string]interface{}))
-						}
-					}
-				}
-			}
-		}
-
-		// Extract images
-		for _, container := range containers {
-			if image, ok := container["image"].(string); ok && image != "" {
-				key := fmt.Sprintf("%s/%s/%s/%s", kind, resourceNamespace, resourceName, image)
-				if !seen[key] {
-					seen[key] = true
-					resources = append(resources, Resource{
-						Type:      kind,
-						Name:      resourceName,
-						Namespace: resourceNamespace,
-						Image:     image,
-					})
-				}
-			}
-		}
-	}
-
-	return resources, nil
-}
-
-func inspectImages(resources []Resource) []InspectResult {
-	results := make([]InspectResult, len(resources))
+func inspectImages(images []ImageRequest) []InspectResult {
+	results := make([]InspectResult, len(images))
 	var wg sync.WaitGroup
 	sem := make(chan struct{}, 10) // Limit concurrent requests
 
-	for i, resource := range resources {
+	for i, img := range images {
 		wg.Add(1)
-		go func(idx int, res Resource) {
+		go func(idx int, imgReq ImageRequest) {
 			defer wg.Done()
 			sem <- struct{}{}
 			defer func() { <-sem }()
 
 			result := InspectResult{
-				Image:        res.Image,
-				ResourceType: res.Type,
-				ResourceName: res.Name,
-				Namespace:    res.Namespace,
+				Image:        imgReq.Image,
+				ResourceType: imgReq.ResourceType,
+				ResourceName: imgReq.ResourceName,
+				Namespace:    imgReq.Namespace,
 			}
 
-			archs, err := getImageArchitectures(res.Image)
+			archs, err := getImageArchitectures(imgReq.Image)
 			if err != nil {
 				result.Error = err.Error()
-				log.WithError(err).WithField("image", res.Image).Warn("Failed to inspect image")
+				log.WithError(err).WithField("image", imgReq.Image).Warn("Failed to inspect image")
 			} else {
 				result.Architectures = archs
 				result.IsArmCompatible = contains(archs, "arm64")
 				log.WithFields(logrus.Fields{
-					"image":         res.Image,
-					"architectures": strings.Join(archs, ", "),
+					"image":          imgReq.Image,
+					"architectures":  strings.Join(archs, ", "),
 					"arm_compatible": result.IsArmCompatible,
 				}).Debug("Image inspected")
 			}
 
 			results[idx] = result
-		}(i, resource)
+		}(i, img)
 	}
 
 	wg.Wait()
