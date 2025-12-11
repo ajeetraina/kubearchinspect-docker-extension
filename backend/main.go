@@ -109,11 +109,13 @@ func healthHandler(c echo.Context) error {
 }
 
 func getContextsHandler(c echo.Context) error {
+	logger.Info("=== getContextsHandler called ===")
 	contexts, current, err := getKubeContexts()
 	if err != nil {
 		logger.Errorf("Failed to get contexts: %v", err)
 		return echo.NewHTTPError(http.StatusInternalServerError, err.Error())
 	}
+	logger.Infof("Returning %d contexts, current: %s", len(contexts), current)
 	return c.JSON(http.StatusOK, ContextsResponse{
 		Contexts: contexts,
 		Current:  current,
@@ -122,19 +124,56 @@ func getContextsHandler(c echo.Context) error {
 
 func getKubeContexts() ([]KubeContext, string, error) {
 	kubeconfig := getKubeconfigPath()
+	
+	// Add debugging
+	logger.Infof("Looking for kubeconfig at: %s", kubeconfig)
+	
+	// Check if file exists
+	if _, err := os.Stat(kubeconfig); os.IsNotExist(err) {
+		logger.Errorf("Kubeconfig file does not exist at: %s", kubeconfig)
+		
+		// Try to list directory contents
+		if dir := filepath.Dir(kubeconfig); dir != "" {
+			logger.Infof("Attempting to list contents of directory: %s", dir)
+			if entries, err := os.ReadDir(dir); err == nil {
+				logger.Infof("Contents of %s:", dir)
+				for _, entry := range entries {
+					logger.Infof("  - %s (isDir: %v)", entry.Name(), entry.IsDir())
+				}
+			} else {
+				logger.Errorf("Cannot read directory %s: %v", dir, err)
+			}
+		}
+		
+		return nil, "", fmt.Errorf("kubeconfig file not found at %s", kubeconfig)
+	}
+	
+	logger.Infof("✓ Found kubeconfig at: %s", kubeconfig)
+	
 	config, err := clientcmd.LoadFromFile(kubeconfig)
 	if err != nil {
+		logger.Errorf("Failed to load kubeconfig: %v", err)
 		return nil, "", fmt.Errorf("failed to load kubeconfig: %w", err)
 	}
 
+	logger.Infof("✓ Successfully loaded kubeconfig with %d contexts", len(config.Contexts))
+	
+	if len(config.Contexts) == 0 {
+		logger.Warn("Kubeconfig loaded but contains no contexts")
+		return []KubeContext{}, "", nil
+	}
+	
 	var contexts []KubeContext
 	for name, ctx := range config.Contexts {
+		logger.Infof("Found context: %s (cluster: %s, current: %v)", name, ctx.Cluster, name == config.CurrentContext)
 		contexts = append(contexts, KubeContext{
 			Name:      name,
 			Cluster:   ctx.Cluster,
 			IsCurrent: name == config.CurrentContext,
 		})
 	}
+	
+	logger.Infof("✓ Returning %d contexts, current context: %s", len(contexts), config.CurrentContext)
 	return contexts, config.CurrentContext, nil
 }
 
@@ -184,6 +223,12 @@ func inspectHandler(c echo.Context) error {
 }
 
 func getKubeconfigPath() string {
+	// Check KUBECONFIG environment variable first
+	if kubeconfig := os.Getenv("KUBECONFIG"); kubeconfig != "" {
+		logger.Infof("Using KUBECONFIG from environment: %s", kubeconfig)
+		return kubeconfig
+	}
+	
 	// Check for Docker Desktop's kubeconfig location
 	home := os.Getenv("HOME")
 	if home == "" {
@@ -196,17 +241,22 @@ func getKubeconfigPath() string {
 		"/root/.kube/config",
 	}
 
+	logger.Infof("Checking kubeconfig in standard locations (HOME=%s)", home)
 	for _, p := range paths {
+		logger.Infof("  Checking: %s", p)
 		if _, err := os.Stat(p); err == nil {
+			logger.Infof("  ✓ Found at: %s", p)
 			return p
 		}
 	}
 
+	logger.Warnf("No kubeconfig found, defaulting to: %s", filepath.Join(home, ".kube", "config"))
 	return filepath.Join(home, ".kube", "config")
 }
 
 func getKubernetesClient(contextName string) (*kubernetes.Clientset, error) {
 	kubeconfig := getKubeconfigPath()
+	logger.Infof("Creating Kubernetes client with context: %s, kubeconfig: %s", contextName, kubeconfig)
 
 	var config *rest.Config
 	var err error
@@ -221,10 +271,18 @@ func getKubernetesClient(contextName string) (*kubernetes.Clientset, error) {
 	}
 
 	if err != nil {
+		logger.Errorf("Failed to build Kubernetes config: %v", err)
 		return nil, err
 	}
 
-	return kubernetes.NewForConfig(config)
+	client, err := kubernetes.NewForConfig(config)
+	if err != nil {
+		logger.Errorf("Failed to create Kubernetes client: %v", err)
+		return nil, err
+	}
+	
+	logger.Info("✓ Successfully created Kubernetes client")
+	return client, nil
 }
 
 func inspectCluster(ctx context.Context, client *kubernetes.Clientset, namespace string) ([]ImageResult, error) {
@@ -238,6 +296,7 @@ func inspectCluster(ctx context.Context, client *kubernetes.Clientset, namespace
 		return nil, fmt.Errorf("failed to list pods: %w", err)
 	}
 
+	logger.Infof("Found %d pods", len(pods.Items))
 	for _, pod := range pods.Items {
 		for _, container := range pod.Spec.Containers {
 			key := container.Image
@@ -257,6 +316,7 @@ func inspectCluster(ctx context.Context, client *kubernetes.Clientset, namespace
 	if err != nil {
 		logger.Warnf("Failed to list deployments: %v", err)
 	} else {
+		logger.Infof("Found %d deployments", len(deployments.Items))
 		for _, deploy := range deployments.Items {
 			for _, container := range deploy.Spec.Template.Spec.Containers {
 				key := container.Image
@@ -277,6 +337,7 @@ func inspectCluster(ctx context.Context, client *kubernetes.Clientset, namespace
 	if err != nil {
 		logger.Warnf("Failed to list daemonsets: %v", err)
 	} else {
+		logger.Infof("Found %d daemonsets", len(daemonsets.Items))
 		for _, ds := range daemonsets.Items {
 			for _, container := range ds.Spec.Template.Spec.Containers {
 				key := container.Image
@@ -297,6 +358,7 @@ func inspectCluster(ctx context.Context, client *kubernetes.Clientset, namespace
 	if err != nil {
 		logger.Warnf("Failed to list statefulsets: %v", err)
 	} else {
+		logger.Infof("Found %d statefulsets", len(statefulsets.Items))
 		for _, sts := range statefulsets.Items {
 			for _, container := range sts.Spec.Template.Spec.Containers {
 				key := container.Image
@@ -311,6 +373,8 @@ func inspectCluster(ctx context.Context, client *kubernetes.Clientset, namespace
 			}
 		}
 	}
+
+	logger.Infof("Found %d unique images to inspect", len(imageMap))
 
 	// Check each image for ARM64 support concurrently
 	var wg sync.WaitGroup
@@ -337,6 +401,7 @@ func inspectCluster(ctx context.Context, client *kubernetes.Clientset, namespace
 		results = append(results, *r)
 	}
 
+	logger.Infof("Completed inspection of %d images", len(results))
 	return results, nil
 }
 
