@@ -53,8 +53,14 @@ LABEL org.opencontainers.image.title="KubeArchInspect" \
     com.docker.extension.changelog="<p>Initial release with ARM64 compatibility checking for Kubernetes cluster images</p>" \
     com.docker.extension.categories="kubernetes,utility"
 
-# Install runtime dependencies
-RUN apk add --no-cache ca-certificates
+# Install runtime dependencies and kubectl
+RUN apk add --no-cache ca-certificates curl
+
+# Install kubectl for the target architecture
+ARG TARGETARCH
+RUN curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/${TARGETARCH}/kubectl" && \
+    chmod +x kubectl && \
+    mv kubectl /usr/local/bin/kubectl
 
 # Copy backend binary
 COPY --from=builder /bin/service /
