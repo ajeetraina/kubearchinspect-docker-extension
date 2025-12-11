@@ -1,17 +1,7 @@
 services:
-  kubearchinspect:
-    image: ${DESKTOP_PLUGIN_IMAGE}
-    restart: always
-    volumes:
-      # Use ${HOME} which Docker Desktop expands correctly
-      - type: bind
-        source: ${HOME}/.kube
-        target: /root/.kube
-        read_only: true
-    security_opt:
-      - no-new-privileges:true
-    read_only: true
-    tmpfs:
-      - /tmp
+  backend:
+    image: ajeetraina/kubearchinspect:latest
+    ports:
+      - 8080:8080
     environment:
-      - KUBECONFIG=/root/.kube/config
+      - PORT=8080

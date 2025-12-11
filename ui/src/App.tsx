@@ -36,19 +36,46 @@ function App() {
   const fetchContexts = useCallback(async () => {
     setLoadingContexts(true);
     try {
-      const result = await ddClient.extension.vm?.service?.get('/contexts');
-      if (result && typeof result === 'object') {
-        const data = result as { contexts: KubeContext[]; current: string };
-        setContexts(data.contexts || []);
-        if (data.current) {
-          setSelectedContext(data.current);
-        } else if (data.contexts?.length > 0) {
-          setSelectedContext(data.contexts[0].name);
-        }
+      // Call kubectl directly on the host (official Docker Extensions pattern)
+      const result = await ddClient.extension.host?.cli.exec("kubectl", [
+        "config",
+        "get-contexts",
+        "-o",
+        "json"
+      ]);
+
+      if (!result || !result.stdout) {
+        throw new Error('No output from kubectl');
       }
-    } catch (err) {
+
+      // Parse kubectl JSON output
+      const kubectlOutput = JSON.parse(result.stdout);
+      
+      // Transform kubectl output to our KubeContext format
+      const contextList: KubeContext[] = kubectlOutput.items?.map((item: any) => ({
+        name: item.name,
+        cluster: item.context?.cluster || '',
+        user: item.context?.user || '',
+        namespace: item.context?.namespace || 'default',
+        current: item.name === kubectlOutput['current-context']
+      })) || [];
+
+      setContexts(contextList);
+
+      // Set the current context as selected
+      const currentContext = kubectlOutput['current-context'];
+      if (currentContext) {
+        setSelectedContext(currentContext);
+      } else if (contextList.length > 0) {
+        setSelectedContext(contextList[0].name);
+      }
+
+      setError(null);
+    } catch (err: any) {
       console.error('Failed to fetch contexts:', err);
-      setError('Failed to fetch Kubernetes contexts. Make sure kubectl is configured.');
+      const errorMessage = err?.stderr || err?.message || 'Failed to fetch Kubernetes contexts';
+      setError(`${errorMessage}. Make sure kubectl is configured and a kubeconfig file exists.`);
+      setContexts([]);
     } finally {
       setLoadingContexts(false);
     }

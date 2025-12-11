@@ -2,465 +2,360 @@ package main
 
 import (
 	"context"
-	"flag"
+	"encoding/json"
 	"fmt"
-	"net"
 	"net/http"
 	"os"
-	"path/filepath"
+	"os/exec"
+	"strings"
 	"sync"
 	"time"
 
+	"github.com/google/go-containerregistry/pkg/name"
+	v1 "github.com/google/go-containerregistry/pkg/v1"
+	"github.com/google/go-containerregistry/pkg/v1/remote"
 	"github.com/labstack/echo/v4"
 	"github.com/labstack/echo/v4/middleware"
 	"github.com/sirupsen/logrus"
-
-	"github.com/google/go-containerregistry/pkg/authn"
-	"github.com/google/go-containerregistry/pkg/name"
-	"github.com/google/go-containerregistry/pkg/v1/remote"
-
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/client-go/kubernetes"
-	"k8s.io/client-go/rest"
-	"k8s.io/client-go/tools/clientcmd"
 )
 
-// ImageResult represents the inspection result for a single image
-type ImageResult struct {
+var log = logrus.New()
+
+func init() {
+	log.SetFormatter(&logrus.JSONFormatter{})
+	log.SetOutput(os.Stdout)
+	log.SetLevel(logrus.InfoLevel)
+}
+
+type InspectRequest struct {
+	Context   string `query:"context"`
+	Namespace string `query:"namespace"`
+}
+
+type InspectResult struct {
 	Image           string   `json:"image"`
-	Namespace       string   `json:"namespace"`
-	ResourceName    string   `json:"resourceName"`
 	ResourceType    string   `json:"resourceType"`
-	Error           string   `json:"error,omitempty"`
-	SupportedArch   []string `json:"supportedArch,omitempty"`
+	ResourceName    string   `json:"resourceName"`
+	Namespace       string   `json:"namespace"`
 	IsArmCompatible bool     `json:"isArmCompatible"`
+	Architectures   []string `json:"architectures"`
+	Error           string   `json:"error,omitempty"`
 }
 
-// InspectResponse represents the API response
 type InspectResponse struct {
-	Results   []ImageResult `json:"results"`
-	Summary   Summary       `json:"summary"`
-	ScanTime  string        `json:"scanTime"`
-	Context   string        `json:"context"`
-	Namespace string        `json:"namespace"`
+	Context  string          `json:"context"`
+	Results  []InspectResult `json:"results"`
+	Summary  Summary         `json:"summary"`
+	ScanTime string          `json:"scanTime"`
 }
 
-// Summary represents the scan summary
 type Summary struct {
-	Total         int `json:"total"`
-	ArmCompatible int `json:"armCompatible"`
-	NotCompatible int `json:"notCompatible"`
-	Errors        int `json:"errors"`
+	Total       int `json:"total"`
+	Compatible  int `json:"compatible"`
+	Incompatible int `json:"incompatible"`
+	Errors      int `json:"errors"`
 }
 
-// KubeContext represents a Kubernetes context
-type KubeContext struct {
-	Name      string `json:"name"`
-	Cluster   string `json:"cluster"`
-	IsCurrent bool   `json:"isCurrent"`
+type Resource struct {
+	Type      string
+	Name      string
+	Namespace string
+	Image     string
 }
-
-// ContextsResponse represents the contexts API response
-type ContextsResponse struct {
-	Contexts []KubeContext `json:"contexts"`
-	Current  string        `json:"current"`
-}
-
-var logger = logrus.New()
 
 func main() {
-	var socketPath string
-	flag.StringVar(&socketPath, "socket", "/run/guest-services/kubearchinspect.sock", "Unix domain socket to listen on")
-	flag.Parse()
-
-	logger.SetFormatter(&logrus.JSONFormatter{})
-	logger.SetLevel(logrus.InfoLevel)
-
-	// Remove existing socket file
-	os.RemoveAll(socketPath)
-
-	logger.Infof("Starting KubeArchInspect backend on %s", socketPath)
-
 	e := echo.New()
-	e.HideBanner = true
-
-	// Middleware
 	e.Use(middleware.Logger())
 	e.Use(middleware.Recover())
 	e.Use(middleware.CORS())
 
-	// Routes
-	e.GET("/health", healthHandler)
-	e.GET("/contexts", getContextsHandler)
-	e.GET("/inspect", inspectHandler)
-
-	// Create Unix socket listener
-	listener, err := net.Listen("unix", socketPath)
-	if err != nil {
-		logger.Fatalf("Failed to listen on socket: %v", err)
-	}
-
-	e.Listener = listener
-	logger.Fatal(e.Start(""))
-}
-
-func healthHandler(c echo.Context) error {
-	return c.JSON(http.StatusOK, map[string]string{"status": "healthy"})
-}
-
-func getContextsHandler(c echo.Context) error {
-	logger.Info("=== getContextsHandler called ===")
-	contexts, current, err := getKubeContexts()
-	if err != nil {
-		logger.Errorf("Failed to get contexts: %v", err)
-		return echo.NewHTTPError(http.StatusInternalServerError, err.Error())
-	}
-	logger.Infof("Returning %d contexts, current: %s", len(contexts), current)
-	return c.JSON(http.StatusOK, ContextsResponse{
-		Contexts: contexts,
-		Current:  current,
+	// Health check endpoint
+	e.GET("/hello", func(c echo.Context) error {
+		return c.JSON(http.StatusOK, map[string]string{
+			"message": "KubeArchInspect backend is running",
+		})
 	})
+
+	// Main inspection endpoint
+	e.GET("/inspect", handleInspect)
+
+	port := os.Getenv("PORT")
+	if port == "" {
+		port = "8080"
+	}
+
+	log.Infof("Starting server on port %s", port)
+	if err := e.Start(":" + port); err != nil {
+		log.Fatal(err)
+	}
 }
 
-func getKubeContexts() ([]KubeContext, string, error) {
-	kubeconfig := getKubeconfigPath()
-	
-	// Add debugging
-	logger.Infof("Looking for kubeconfig at: %s", kubeconfig)
-	
-	// Check if file exists
-	if _, err := os.Stat(kubeconfig); os.IsNotExist(err) {
-		logger.Errorf("Kubeconfig file does not exist at: %s", kubeconfig)
-		
-		// Try to list directory contents
-		if dir := filepath.Dir(kubeconfig); dir != "" {
-			logger.Infof("Attempting to list contents of directory: %s", dir)
-			if entries, err := os.ReadDir(dir); err == nil {
-				logger.Infof("Contents of %s:", dir)
-				for _, entry := range entries {
-					logger.Infof("  - %s (isDir: %v)", entry.Name(), entry.IsDir())
-				}
-			} else {
-				logger.Errorf("Cannot read directory %s: %v", dir, err)
-			}
-		}
-		
-		return nil, "", fmt.Errorf("kubeconfig file not found at %s", kubeconfig)
-	}
-	
-	logger.Infof("✓ Found kubeconfig at: %s", kubeconfig)
-	
-	config, err := clientcmd.LoadFromFile(kubeconfig)
-	if err != nil {
-		logger.Errorf("Failed to load kubeconfig: %v", err)
-		return nil, "", fmt.Errorf("failed to load kubeconfig: %w", err)
-	}
-
-	logger.Infof("✓ Successfully loaded kubeconfig with %d contexts", len(config.Contexts))
-	
-	if len(config.Contexts) == 0 {
-		logger.Warn("Kubeconfig loaded but contains no contexts")
-		return []KubeContext{}, "", nil
-	}
-	
-	var contexts []KubeContext
-	for name, ctx := range config.Contexts {
-		logger.Infof("Found context: %s (cluster: %s, current: %v)", name, ctx.Cluster, name == config.CurrentContext)
-		contexts = append(contexts, KubeContext{
-			Name:      name,
-			Cluster:   ctx.Cluster,
-			IsCurrent: name == config.CurrentContext,
+func handleInspect(c echo.Context) error {
+	var req InspectRequest
+	if err := c.Bind(&req); err != nil {
+		log.WithError(err).Error("Failed to bind request")
+		return c.JSON(http.StatusBadRequest, map[string]string{
+			"error": "Invalid request parameters",
 		})
 	}
-	
-	logger.Infof("✓ Returning %d contexts, current context: %s", len(contexts), config.CurrentContext)
-	return contexts, config.CurrentContext, nil
-}
 
-func inspectHandler(c echo.Context) error {
-	ctxName := c.QueryParam("context")
-	namespace := c.QueryParam("namespace")
-
-	if namespace == "" || namespace == "all" {
-		namespace = "" // Empty string means all namespaces in K8s API
+	if req.Context == "" {
+		return c.JSON(http.StatusBadRequest, map[string]string{
+			"error": "context parameter is required",
+		})
 	}
 
-	logger.Infof("Inspecting cluster with context: %s, namespace: %s", ctxName, namespace)
+	if req.Namespace == "" {
+		req.Namespace = "all"
+	}
 
-	client, err := getKubernetesClient(ctxName)
+	log.WithFields(logrus.Fields{
+		"context":   req.Context,
+		"namespace": req.Namespace,
+	}).Info("Starting inspection")
+
+	startTime := time.Now()
+
+	// Get resources from cluster
+	resources, err := getResources(req.Context, req.Namespace)
 	if err != nil {
-		logger.Errorf("Failed to get Kubernetes client: %v", err)
-		return echo.NewHTTPError(http.StatusInternalServerError, fmt.Sprintf("Failed to connect to cluster: %v", err))
+		log.WithError(err).Error("Failed to get resources")
+		return c.JSON(http.StatusInternalServerError, map[string]string{
+			"error": fmt.Sprintf("Failed to get resources: %v", err),
+		})
 	}
 
-	results, err := inspectCluster(c.Request().Context(), client, namespace)
-	if err != nil {
-		logger.Errorf("Failed to inspect cluster: %v", err)
-		return echo.NewHTTPError(http.StatusInternalServerError, err.Error())
-	}
+	log.Infof("Found %d resources to inspect", len(resources))
+
+	// Inspect images concurrently
+	results := inspectImages(resources)
 
 	// Calculate summary
 	summary := Summary{Total: len(results)}
-	for _, r := range results {
-		if r.Error != "" {
+	for _, result := range results {
+		if result.Error != "" {
 			summary.Errors++
-		} else if r.IsArmCompatible {
-			summary.ArmCompatible++
+		} else if result.IsArmCompatible {
+			summary.Compatible++
 		} else {
-			summary.NotCompatible++
+			summary.Incompatible++
 		}
 	}
 
+	scanTime := time.Since(startTime).String()
+
 	response := InspectResponse{
-		Results:   results,
-		Summary:   summary,
-		ScanTime:  time.Now().Format(time.RFC3339),
-		Context:   ctxName,
-		Namespace: namespace,
+		Context:  req.Context,
+		Results:  results,
+		Summary:  summary,
+		ScanTime: scanTime,
 	}
+
+	log.WithFields(logrus.Fields{
+		"total":       summary.Total,
+		"compatible":  summary.Compatible,
+		"incompatible": summary.Incompatible,
+		"errors":      summary.Errors,
+		"scan_time":   scanTime,
+	}).Info("Inspection completed")
 
 	return c.JSON(http.StatusOK, response)
 }
 
-func getKubeconfigPath() string {
-	// Check KUBECONFIG environment variable first
-	if kubeconfig := os.Getenv("KUBECONFIG"); kubeconfig != "" {
-		logger.Infof("Using KUBECONFIG from environment: %s", kubeconfig)
-		return kubeconfig
-	}
-	
-	// Check for Docker Desktop's kubeconfig location
-	home := os.Getenv("HOME")
-	if home == "" {
-		home = os.Getenv("USERPROFILE")
+func getResources(contextName, namespace string) ([]Resource, error) {
+	args := []string{
+		"--context", contextName,
+		"get", "pods,deployments,statefulsets,daemonsets,jobs,cronjobs",
+		"-o", "json",
 	}
 
-	// Check standard locations
-	paths := []string{
-		filepath.Join(home, ".kube", "config"),
-		"/root/.kube/config",
+	if namespace != "all" {
+		args = append(args, "-n", namespace)
+	} else {
+		args = append(args, "--all-namespaces")
 	}
 
-	logger.Infof("Checking kubeconfig in standard locations (HOME=%s)", home)
-	for _, p := range paths {
-		logger.Infof("  Checking: %s", p)
-		if _, err := os.Stat(p); err == nil {
-			logger.Infof("  ✓ Found at: %s", p)
-			return p
+	cmd := exec.Command("kubectl", args...)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return nil, fmt.Errorf("kubectl command failed: %v, output: %s", err, string(output))
+	}
+
+	var result struct {
+		Items []map[string]interface{} `json:"items"`
+	}
+
+	if err := json.Unmarshal(output, &result); err != nil {
+		return nil, fmt.Errorf("failed to parse kubectl output: %v", err)
+	}
+
+	var resources []Resource
+	seen := make(map[string]bool)
+
+	for _, item := range result.Items {
+		kind := item["kind"].(string)
+		metadata := item["metadata"].(map[string]interface{})
+		resourceName := metadata["name"].(string)
+		resourceNamespace := metadata["namespace"].(string)
+
+		var containers []map[string]interface{}
+
+		// Extract containers based on resource type
+		spec := item["spec"].(map[string]interface{})
+		switch kind {
+		case "Pod":
+			if cs, ok := spec["containers"].([]interface{}); ok {
+				for _, c := range cs {
+					containers = append(containers, c.(map[string]interface{}))
+				}
+			}
+		case "Deployment", "StatefulSet", "DaemonSet":
+			if template, ok := spec["template"].(map[string]interface{}); ok {
+				if templateSpec, ok := template["spec"].(map[string]interface{}); ok {
+					if cs, ok := templateSpec["containers"].([]interface{}); ok {
+						for _, c := range cs {
+							containers = append(containers, c.(map[string]interface{}))
+						}
+					}
+				}
+			}
+		case "Job", "CronJob":
+			var jobSpec map[string]interface{}
+			if kind == "CronJob" {
+				if jobTemplate, ok := spec["jobTemplate"].(map[string]interface{}); ok {
+					jobSpec = jobTemplate["spec"].(map[string]interface{})
+				}
+			} else {
+				jobSpec = spec
+			}
+			if template, ok := jobSpec["template"].(map[string]interface{}); ok {
+				if templateSpec, ok := template["spec"].(map[string]interface{}); ok {
+					if cs, ok := templateSpec["containers"].([]interface{}); ok {
+						for _, c := range cs {
+							containers = append(containers, c.(map[string]interface{}))
+						}
+					}
+				}
+			}
+		}
+
+		// Extract images
+		for _, container := range containers {
+			if image, ok := container["image"].(string); ok && image != "" {
+				key := fmt.Sprintf("%s/%s/%s/%s", kind, resourceNamespace, resourceName, image)
+				if !seen[key] {
+					seen[key] = true
+					resources = append(resources, Resource{
+						Type:      kind,
+						Name:      resourceName,
+						Namespace: resourceNamespace,
+						Image:     image,
+					})
+				}
+			}
 		}
 	}
 
-	logger.Warnf("No kubeconfig found, defaulting to: %s", filepath.Join(home, ".kube", "config"))
-	return filepath.Join(home, ".kube", "config")
+	return resources, nil
 }
 
-func getKubernetesClient(contextName string) (*kubernetes.Clientset, error) {
-	kubeconfig := getKubeconfigPath()
-	logger.Infof("Creating Kubernetes client with context: %s, kubeconfig: %s", contextName, kubeconfig)
-
-	var config *rest.Config
-	var err error
-
-	if contextName != "" {
-		config, err = clientcmd.NewNonInteractiveDeferredLoadingClientConfig(
-			&clientcmd.ClientConfigLoadingRules{ExplicitPath: kubeconfig},
-			&clientcmd.ConfigOverrides{CurrentContext: contextName},
-		).ClientConfig()
-	} else {
-		config, err = clientcmd.BuildConfigFromFlags("", kubeconfig)
-	}
-
-	if err != nil {
-		logger.Errorf("Failed to build Kubernetes config: %v", err)
-		return nil, err
-	}
-
-	client, err := kubernetes.NewForConfig(config)
-	if err != nil {
-		logger.Errorf("Failed to create Kubernetes client: %v", err)
-		return nil, err
-	}
-	
-	logger.Info("✓ Successfully created Kubernetes client")
-	return client, nil
-}
-
-func inspectCluster(ctx context.Context, client *kubernetes.Clientset, namespace string) ([]ImageResult, error) {
-	// Collect unique images from pods
-	imageMap := make(map[string]*ImageResult)
-	var mu sync.Mutex
-
-	// Get pods
-	pods, err := client.CoreV1().Pods(namespace).List(ctx, metav1.ListOptions{})
-	if err != nil {
-		return nil, fmt.Errorf("failed to list pods: %w", err)
-	}
-
-	logger.Infof("Found %d pods", len(pods.Items))
-	for _, pod := range pods.Items {
-		for _, container := range pod.Spec.Containers {
-			key := container.Image
-			if _, exists := imageMap[key]; !exists {
-				imageMap[key] = &ImageResult{
-					Image:        container.Image,
-					Namespace:    pod.Namespace,
-					ResourceName: pod.Name,
-					ResourceType: "Pod",
-				}
-			}
-		}
-	}
-
-	// Get deployments
-	deployments, err := client.AppsV1().Deployments(namespace).List(ctx, metav1.ListOptions{})
-	if err != nil {
-		logger.Warnf("Failed to list deployments: %v", err)
-	} else {
-		logger.Infof("Found %d deployments", len(deployments.Items))
-		for _, deploy := range deployments.Items {
-			for _, container := range deploy.Spec.Template.Spec.Containers {
-				key := container.Image
-				if _, exists := imageMap[key]; !exists {
-					imageMap[key] = &ImageResult{
-						Image:        container.Image,
-						Namespace:    deploy.Namespace,
-						ResourceName: deploy.Name,
-						ResourceType: "Deployment",
-					}
-				}
-			}
-		}
-	}
-
-	// Get daemonsets
-	daemonsets, err := client.AppsV1().DaemonSets(namespace).List(ctx, metav1.ListOptions{})
-	if err != nil {
-		logger.Warnf("Failed to list daemonsets: %v", err)
-	} else {
-		logger.Infof("Found %d daemonsets", len(daemonsets.Items))
-		for _, ds := range daemonsets.Items {
-			for _, container := range ds.Spec.Template.Spec.Containers {
-				key := container.Image
-				if _, exists := imageMap[key]; !exists {
-					imageMap[key] = &ImageResult{
-						Image:        container.Image,
-						Namespace:    ds.Namespace,
-						ResourceName: ds.Name,
-						ResourceType: "DaemonSet",
-					}
-				}
-			}
-		}
-	}
-
-	// Get statefulsets
-	statefulsets, err := client.AppsV1().StatefulSets(namespace).List(ctx, metav1.ListOptions{})
-	if err != nil {
-		logger.Warnf("Failed to list statefulsets: %v", err)
-	} else {
-		logger.Infof("Found %d statefulsets", len(statefulsets.Items))
-		for _, sts := range statefulsets.Items {
-			for _, container := range sts.Spec.Template.Spec.Containers {
-				key := container.Image
-				if _, exists := imageMap[key]; !exists {
-					imageMap[key] = &ImageResult{
-						Image:        container.Image,
-						Namespace:    sts.Namespace,
-						ResourceName: sts.Name,
-						ResourceType: "StatefulSet",
-					}
-				}
-			}
-		}
-	}
-
-	logger.Infof("Found %d unique images to inspect", len(imageMap))
-
-	// Check each image for ARM64 support concurrently
+func inspectImages(resources []Resource) []InspectResult {
+	results := make([]InspectResult, len(resources))
 	var wg sync.WaitGroup
-	semaphore := make(chan struct{}, 10) // Limit concurrent registry calls
+	sem := make(chan struct{}, 10) // Limit concurrent requests
 
-	for _, result := range imageMap {
+	for i, resource := range resources {
 		wg.Add(1)
-		go func(r *ImageResult) {
+		go func(idx int, res Resource) {
 			defer wg.Done()
-			semaphore <- struct{}{}
-			defer func() { <-semaphore }()
+			sem <- struct{}{}
+			defer func() { <-sem }()
 
-			checkImageArm64Support(r)
-			mu.Lock()
-			mu.Unlock()
-		}(result)
+			result := InspectResult{
+				Image:        res.Image,
+				ResourceType: res.Type,
+				ResourceName: res.Name,
+				Namespace:    res.Namespace,
+			}
+
+			archs, err := getImageArchitectures(res.Image)
+			if err != nil {
+				result.Error = err.Error()
+				log.WithError(err).WithField("image", res.Image).Warn("Failed to inspect image")
+			} else {
+				result.Architectures = archs
+				result.IsArmCompatible = contains(archs, "arm64")
+				log.WithFields(logrus.Fields{
+					"image":         res.Image,
+					"architectures": strings.Join(archs, ", "),
+					"arm_compatible": result.IsArmCompatible,
+				}).Debug("Image inspected")
+			}
+
+			results[idx] = result
+		}(i, resource)
 	}
 
 	wg.Wait()
-
-	// Convert map to slice
-	var results []ImageResult
-	for _, r := range imageMap {
-		results = append(results, *r)
-	}
-
-	logger.Infof("Completed inspection of %d images", len(results))
-	return results, nil
+	return results
 }
 
-func checkImageArm64Support(result *ImageResult) {
-	ref, err := name.ParseReference(result.Image)
+func getImageArchitectures(imageName string) ([]string, error) {
+	ref, err := name.ParseReference(imageName)
 	if err != nil {
-		result.Error = fmt.Sprintf("Failed to parse image reference: %v", err)
-		return
+		return nil, fmt.Errorf("invalid image reference: %v", err)
 	}
 
-	// Try to get the image index/manifest
-	idx, err := remote.Index(ref, remote.WithAuthFromKeychain(authn.DefaultKeychain))
+	desc, err := remote.Get(ref, remote.WithContext(context.Background()))
 	if err != nil {
-		// Try as a single-platform image
-		img, imgErr := remote.Image(ref, remote.WithAuthFromKeychain(authn.DefaultKeychain))
-		if imgErr != nil {
-			result.Error = fmt.Sprintf("Failed to fetch image: %v", err)
-			return
-		}
-
-		// Check config for architecture
-		cfg, cfgErr := img.ConfigFile()
-		if cfgErr != nil {
-			result.Error = fmt.Sprintf("Failed to get image config: %v", cfgErr)
-			return
-		}
-
-		result.SupportedArch = []string{cfg.Architecture}
-		if cfg.Architecture == "arm64" || cfg.Architecture == "aarch64" {
-			result.IsArmCompatible = true
-		} else {
-			result.IsArmCompatible = false
-		}
-		return
+		return nil, fmt.Errorf("failed to fetch image: %v", err)
 	}
 
-	// It's a multi-arch image, check the manifest
-	idxManifest, err := idx.IndexManifest()
-	if err != nil {
-		result.Error = fmt.Sprintf("Failed to get index manifest: %v", err)
-		return
-	}
+	// Check if it's a manifest list (multi-arch)
+	if desc.MediaType.IsIndex() {
+		idx, err := desc.ImageIndex()
+		if err != nil {
+			return nil, fmt.Errorf("failed to get image index: %v", err)
+		}
 
-	var architectures []string
-	hasArm64 := false
+		manifest, err := idx.IndexManifest()
+		if err != nil {
+			return nil, fmt.Errorf("failed to get index manifest: %v", err)
+		}
 
-	for _, desc := range idxManifest.Manifests {
-		if desc.Platform != nil {
-			arch := desc.Platform.Architecture
-			if desc.Platform.Variant != "" {
-				arch = fmt.Sprintf("%s/%s", arch, desc.Platform.Variant)
-			}
-			architectures = append(architectures, arch)
-			if desc.Platform.Architecture == "arm64" || desc.Platform.Architecture == "aarch64" {
-				hasArm64 = true
+		archs := make(map[string]bool)
+		for _, m := range manifest.Manifests {
+			if m.Platform != nil {
+				archs[m.Platform.Architecture] = true
 			}
 		}
+
+		var result []string
+		for arch := range archs {
+			result = append(result, arch)
+		}
+		return result, nil
 	}
 
-	result.SupportedArch = architectures
-	result.IsArmCompatible = hasArm64
+	// Single architecture image
+	img, err := desc.Image()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get image: %v", err)
+	}
+
+	config, err := img.ConfigFile()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get config: %v", err)
+	}
+
+	return []string{config.Architecture}, nil
+}
+
+func contains(slice []string, item string) bool {
+	for _, s := range slice {
+		if s == item {
+			return true
+		}
+	}
+	return false
 }
