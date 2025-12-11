@@ -59,9 +59,10 @@ RUN apk add --no-cache ca-certificates
 # Copy backend binary
 COPY --from=builder /bin/service /
 
-# Copy metadata and icon
+# Copy metadata, icon, and docker-compose.yaml
 COPY metadata.json .
 COPY kubearchinspect.svg .
+COPY docker-compose.yaml .
 
 # Copy UI build output (vite config uses 'build' as outDir)
 COPY --from=client-builder /ui/build ui
