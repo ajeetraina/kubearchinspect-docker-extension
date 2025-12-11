@@ -3,9 +3,9 @@ services:
     image: ${DESKTOP_PLUGIN_IMAGE}
     restart: always
     volumes:
-      # Mount kubeconfig - works on Mac, Linux, Windows
+      # Use ${HOME} which Docker Desktop expands correctly
       - type: bind
-        source: ~/.kube
+        source: ${HOME}/.kube
         target: /root/.kube
         read_only: true
     security_opt:
