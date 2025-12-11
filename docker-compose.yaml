@@ -3,9 +3,15 @@ services:
     image: ${DESKTOP_PLUGIN_IMAGE}
     restart: always
     volumes:
-      - $HOME/.kube:/root/.kube:ro  # Mount kubeconfig file
+      # Mount kubeconfig - works on Mac, Linux, Windows
+      - type: bind
+        source: ~/.kube
+        target: /root/.kube
+        read_only: true
     security_opt:
       - no-new-privileges:true
     read_only: true
     tmpfs:
       - /tmp
+    environment:
+      - KUBECONFIG=/root/.kube/config
