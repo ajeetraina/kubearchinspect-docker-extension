@@ -36,10 +36,10 @@ function App() {
   const fetchContexts = useCallback(async () => {
     setLoadingContexts(true);
     try {
-      // Call kubectl directly on the host (official Docker Extensions pattern)
+      // Get contexts using kubectl config view (which outputs valid JSON)
       const result = await ddClient.extension.host?.cli.exec("kubectl", [
         "config",
-        "get-contexts",
+        "view",
         "-o",
         "json"
       ]);
@@ -49,21 +49,21 @@ function App() {
       }
 
       // Parse kubectl JSON output
-      const kubectlOutput = JSON.parse(result.stdout);
+      const kubeconfigData = JSON.parse(result.stdout);
       
-      // Transform kubectl output to our KubeContext format
-      const contextList: KubeContext[] = kubectlOutput.items?.map((item: any) => ({
-        name: item.name,
-        cluster: item.context?.cluster || '',
-        user: item.context?.user || '',
-        namespace: item.context?.namespace || 'default',
-        current: item.name === kubectlOutput['current-context']
+      // Extract contexts from kubeconfig
+      const contextList: KubeContext[] = kubeconfigData.contexts?.map((ctx: any) => ({
+        name: ctx.name,
+        cluster: ctx.context?.cluster || '',
+        user: ctx.context?.user || '',
+        namespace: ctx.context?.namespace || 'default',
+        current: ctx.name === kubeconfigData['current-context']
       })) || [];
 
       setContexts(contextList);
 
       // Set the current context as selected
-      const currentContext = kubectlOutput['current-context'];
+      const currentContext = kubeconfigData['current-context'];
       if (currentContext) {
         setSelectedContext(currentContext);
       } else if (contextList.length > 0) {
