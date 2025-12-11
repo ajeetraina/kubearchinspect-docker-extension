@@ -92,4 +92,5 @@ COPY --from=client-builder /ui/build ui
 # Set secure permissions
 RUN chmod 555 /service
 
-CMD ["/service", "-socket", "/run/guest-services/kubearchinspect.sock"]
+# Start the HTTP server (not using Unix socket)
+CMD ["/service"]
