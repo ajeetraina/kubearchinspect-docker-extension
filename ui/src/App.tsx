@@ -20,6 +20,13 @@ import { InspectResponse, KubeContext, FilterType } from './types';
 
 const ddClient = createDockerDesktopClient();
 
+interface ImageRequest {
+  image: string;
+  resourceType: string;
+  resourceName: string;
+  namespace: string;
+}
+
 function App() {
   // State
   const [contexts, setContexts] = useState<KubeContext[]>([]);
@@ -86,6 +93,78 @@ function App() {
     fetchContexts();
   }, [fetchContexts]);
 
+  // Get resources from cluster using kubectl
+  const getResourcesFromCluster = async (): Promise<ImageRequest[]> => {
+    const args = [
+      '--context', selectedContext,
+      'get', 'pods,deployments,statefulsets,daemonsets,jobs,cronjobs',
+      '-o', 'json'
+    ];
+
+    if (selectedNamespace !== 'all') {
+      args.push('-n', selectedNamespace);
+    } else {
+      args.push('--all-namespaces');
+    }
+
+    const result = await ddClient.extension.host?.cli.exec('kubectl', args);
+
+    if (!result || !result.stdout) {
+      throw new Error('No output from kubectl');
+    }
+
+    const data = JSON.parse(result.stdout);
+    const images: ImageRequest[] = [];
+    const seen = new Set<string>();
+
+    for (const item of data.items || []) {
+      const kind = item.kind;
+      const metadata = item.metadata;
+      const resourceName = metadata.name;
+      const namespace = metadata.namespace;
+
+      let containers: any[] = [];
+
+      // Extract containers based on resource type
+      const spec = item.spec;
+      switch (kind) {
+        case 'Pod':
+          containers = spec?.containers || [];
+          break;
+        case 'Deployment':
+        case 'StatefulSet':
+        case 'DaemonSet':
+          containers = spec?.template?.spec?.containers || [];
+          break;
+        case 'Job':
+          containers = spec?.template?.spec?.containers || [];
+          break;
+        case 'CronJob':
+          containers = spec?.jobTemplate?.spec?.template?.spec?.containers || [];
+          break;
+      }
+
+      // Extract images
+      for (const container of containers) {
+        const image = container.image;
+        if (image) {
+          const key = `${kind}/${namespace}/${resourceName}/${image}`;
+          if (!seen.has(key)) {
+            seen.add(key);
+            images.push({
+              image,
+              resourceType: kind,
+              resourceName,
+              namespace
+            });
+          }
+        }
+      }
+    }
+
+    return images;
+  };
+
   // Inspect resources
   const inspectResources = async () => {
     if (!selectedContext) {
@@ -98,21 +177,31 @@ function App() {
     setInspectData(null);
 
     try {
-      const params = new URLSearchParams({
-        context: selectedContext,
-        namespace: selectedNamespace,
+      // Get resources from cluster using kubectl on host
+      const images = await getResourcesFromCluster();
+
+      if (images.length === 0) {
+        setError('No resources found in the cluster');
+        setLoading(false);
+        return;
+      }
+
+      // Send images to backend for inspection
+      const result = await ddClient.extension.vm?.service?.post('/inspect', {
+        images
       });
       
-      const result = await ddClient.extension.vm?.service?.get(`/inspect?${params}`);
-      
       if (result && typeof result === 'object') {
-        setInspectData(result as InspectResponse);
+        // Add context to the response
+        const response = result as InspectResponse;
+        setInspectData(response);
       } else {
         setError('Invalid response format from backend');
       }
     } catch (err: any) {
       console.error('Inspection failed:', err);
-      setError(err?.message || 'Failed to inspect resources. Please check your cluster connection.');
+      const errorMessage = err?.stderr || err?.message || 'Failed to inspect resources';
+      setError(`${errorMessage}. Please check your cluster connection.`);
     } finally {
       setLoading(false);
     }
