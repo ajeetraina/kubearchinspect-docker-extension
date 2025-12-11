@@ -53,14 +53,30 @@ LABEL org.opencontainers.image.title="KubeArchInspect" \
     com.docker.extension.changelog="<p>Initial release with ARM64 compatibility checking for Kubernetes cluster images</p>" \
     com.docker.extension.categories="kubernetes,utility"
 
-# Install runtime dependencies and kubectl
+# Install runtime dependencies
 RUN apk add --no-cache ca-certificates curl
 
-# Install kubectl for the target architecture
-ARG TARGETARCH
-RUN curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/${TARGETARCH}/kubectl" && \
+# Download kubectl for ALL host platforms (these will run on the host, not in container)
+# Get the stable kubectl version
+RUN KUBECTL_VERSION=$(curl -L -s https://dl.k8s.io/release/stable.txt) && \
+    # Linux amd64
+    curl -LO "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/amd64/kubectl" && \
+    mkdir -p /linux && \
     chmod +x kubectl && \
-    mv kubectl /usr/local/bin/kubectl
+    mv kubectl /linux/kubectl && \
+    # macOS amd64 (Intel)
+    curl -LO "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/darwin/amd64/kubectl" && \
+    mkdir -p /darwin && \
+    chmod +x kubectl && \
+    mv kubectl /darwin/kubectl-amd64 && \
+    # macOS arm64 (Apple Silicon)
+    curl -LO "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/darwin/arm64/kubectl" && \
+    chmod +x kubectl && \
+    mv kubectl /darwin/kubectl && \
+    # Windows amd64
+    curl -LO "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/windows/amd64/kubectl.exe" && \
+    mkdir -p /windows && \
+    mv kubectl.exe /windows/kubectl.exe
 
 # Copy backend binary
 COPY --from=builder /bin/service /
