@@ -39,16 +39,43 @@ function App() {
   const [filter, setFilter] = useState<FilterType>('all');
   const [searchQuery, setSearchQuery] = useState('');
 
+  // Validate if a context is reachable
+  const validateContext = async (contextName: string): Promise<boolean> => {
+    try {
+      const result = await ddClient.extension.host?.cli.exec("kubectl", [
+        "cluster-info",
+        "--request-timeout", "5s",
+        "--context", contextName
+      ]);
+      
+      return !result?.stderr || !result.stderr.includes('refused');
+    } catch (err) {
+      console.error('Context validation failed:', err);
+      return false;
+    }
+  };
+
   // Fetch available Kubernetes contexts
   const fetchContexts = useCallback(async () => {
     setLoadingContexts(true);
     try {
-      // Get contexts using kubectl config view (which outputs valid JSON)
+      // First, check if kubectl is available
+      const testResult = await ddClient.extension.host?.cli.exec("kubectl", [
+        "version",
+        "--client=true"
+      ]);
+      
+      if (!testResult || testResult.stderr) {
+        throw new Error('kubectl is not available');
+      }
+
+      // Get contexts using kubectl config view with --raw flag
       const result = await ddClient.extension.host?.cli.exec("kubectl", [
         "config",
         "view",
         "-o",
-        "json"
+        "json",
+        "--raw"
       ]);
 
       if (!result || !result.stdout) {
@@ -95,6 +122,24 @@ function App() {
 
   // Get resources from cluster using kubectl
   const getResourcesFromCluster = async (): Promise<ImageRequest[]> => {
+    // First verify the context is reachable
+    try {
+      const clusterCheck = await ddClient.extension.host?.cli.exec("kubectl", [
+        "cluster-info",
+        "--request-timeout",
+        "3s",
+        "--context",
+        selectedContext
+      ]);
+      
+      if (clusterCheck?.stderr && clusterCheck.stderr.includes('ECONNREFUSED')) {
+        throw new Error(`Cannot connect to cluster context: ${selectedContext}. Please check your cluster is running.`);
+      }
+    } catch (err: any) {
+      throw new Error(`Cluster not reachable: ${err.message || err}`);
+    }
+
+    // Build kubectl command with explicit context
     const args = [
       '--context', selectedContext,
       'get', 'pods,deployments,statefulsets,daemonsets,jobs,cronjobs',
@@ -169,6 +214,13 @@ function App() {
   const inspectResources = async () => {
     if (!selectedContext) {
       setError('Please select a Kubernetes context');
+      return;
+    }
+
+    // Validate context before proceeding
+    const isValid = await validateContext(selectedContext);
+    if (!isValid) {
+      setError(`Cannot connect to context: ${selectedContext}. Please check your cluster connection and ensure the API server is reachable.`);
       return;
     }
 
